@@ -1,0 +1,16 @@
+{
+  "name": "photo-keeper",
+  "version": "1.0.0",
+  "description": "Googleフォトから選んだ写真を保存する個人用Webサービス",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "express-session": "^1.18.0"
+  }
+}

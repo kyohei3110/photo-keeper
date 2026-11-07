@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>フォトキーパー</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#1a73e8">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="フォトキーパー">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1c1f24; --sub:#6b7280; --accent:#1a73e8; --line:#e5e7eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#121417; --card:#1c1f24; --text:#eceff3; --sub:#9aa3af; --accent:#6ea8fe; --line:#2c3138; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; background:var(--card); border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5; }
+  header h1 { font-size:17px; margin:0; }
+  header small { color:var(--sub); }
+  main { max-width:960px; margin:0 auto; padding:16px; }
+  .btn { display:inline-block; border:0; border-radius:10px; padding:12px 18px; font-size:15px; font-weight:600; background:var(--accent); color:#fff; text-decoration:none; cursor:pointer; }
+  .btn.ghost { background:transparent; color:var(--accent); border:1px solid var(--line); }
+  .btn.small { padding:6px 10px; font-size:13px; }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; margin-bottom:16px; text-align:center; }
+  .panel p { margin:8px 0; color:var(--sub); font-size:14px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(110px,1fr)); gap:6px; }
+  .tile { position:relative; aspect-ratio:1; background:var(--line); border-radius:8px; overflow:hidden; cursor:pointer; }
+  .tile img, .tile video { width:100%; height:100%; object-fit:cover; display:block; }
+  .tile .badge { position:absolute; right:6px; bottom:6px; background:rgba(0,0,0,.6); color:#fff; font-size:11px; padding:2px 6px; border-radius:6px; }
+  #viewer { position:fixed; inset:0; background:rgba(0,0,0,.92); display:none; flex-direction:column; align-items:center; justify-content:center; z-index:10; }
+  #viewer.on { display:flex; }
+  #viewer img, #viewer video { max-width:100%; max-height:80vh; }
+  #viewer .bar { margin-top:14px; display:flex; gap:10px; color:#fff; align-items:center; flex-wrap:wrap; justify-content:center; }
+  .msg { margin-top:10px; font-size:14px; min-height:20px; }
+  .count { color:var(--sub); font-size:13px; margin:0 0 8px 2px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📷 フォトキーパー</h1>
+  <div id="who"></div>
+</header>
+<main id="app"></main>
+
+<div id="viewer">
+  <div id="vbody"></div>
+  <div class="bar">
+    <span id="vname"></span>
+    <a class="btn small" id="vdl" download>ダウンロード</a>
+    <button class="btn small ghost" id="vdel" style="color:#ff8a80">削除</button>
+    <button class="btn small ghost" id="vclose" style="color:#fff">閉じる</button>
+  </div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const app = $('#app');
+let photos = [], current = null;
+
+async function api(url, opts = {}) {
+  const r = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'エラー (' + r.status + ')');
+  return j;
+}
+
+async function init() {
+  const { user } = await api('/api/me');
+  if (!user) {
+    $('#who').innerHTML = '';
+    app.innerHTML = `<div class="panel"><p>Googleアカウントでログインしてください</p><a class="btn" href="/auth/login">Googleでログイン</a></div>`;
+    return;
+  }
+  $('#who').innerHTML = `<small>${user.email}</small> <a class="btn small ghost" href="/auth/logout">ログアウト</a>`;
+  app.innerHTML = `
+    <div class="panel">
+      <button class="btn" id="pick">Googleフォトから写真を選ぶ</button>
+      <p>選んだ写真・動画がこのサービスに保存されます</p>
+      <div class="msg" id="msg"></div>
+    </div>
+    <p class="count" id="count"></p>
+    <div class="grid" id="grid"></div>`;
+  $('#pick').onclick = startPick;
+  await loadPhotos();
+}
+
+async function loadPhotos() {
+  ({ photos } = await api('/api/photos'));
+  $('#count').textContent = photos.length ? `保存済み ${photos.length} 件` : 'まだ保存された写真はありません';
+  $('#grid').innerHTML = photos.map((p, i) => `
+    <div class="tile" data-i="${i}">
+      ${p.type === 'VIDEO' ? `<video src="/files/${p.file}#t=0.1" preload="metadata" muted></video><span class="badge">動画</span>`
+                           : `<img loading="lazy" src="/files/${p.file}" alt="">`}
+    </div>`).join('');
+  document.querySelectorAll('.tile').forEach((t) => (t.onclick = () => openViewer(+t.dataset.i)));
+}
+
+function setMsg(html) { $('#msg').innerHTML = html; }
+
+async function startPick() {
+  const btn = $('#pick');
+  btn.disabled = true;
+  try {
+    setMsg('準備中…');
+    const s = await api('/api/picker/start', { method: 'POST' });
+    setMsg(`<a class="btn" href="${s.pickerUri}" target="_blank" rel="noopener">Googleフォトを開いて選択</a><p>選び終わると自動で保存されます</p>`);
+    await waitAndImport(s);
+  } catch (e) {
+    setMsg('⚠️ ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function waitAndImport(s) {
+  const deadline = Date.now() + 25 * 60 * 1000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, s.pollIntervalMs));
+    const st = await api('/api/picker/' + encodeURIComponent(s.id));
+    if (st.mediaItemsSet) {
+      setMsg('保存中…（枚数が多いと時間がかかります）');
+      const r = await api(`/api/picker/${encodeURIComponent(s.id)}/import`, { method: 'POST' });
+      setMsg(`✅ ${r.saved}件を保存` + (r.skipped ? `（${r.skipped}件は保存済み）` : '') + (r.failed ? `（${r.failed}件失敗）` : ''));
+      await loadPhotos();
+      return;
+    }
+  }
+  setMsg('時間切れになりました。もう一度お試しください');
+}
+
+function openViewer(i) {
+  current = photos[i];
+  $('#vbody').innerHTML = current.type === 'VIDEO'
+    ? `<video src="/files/${current.file}" controls autoplay playsinline></video>`
+    : `<img src="/files/${current.file}" alt="">`;
+  $('#vname').textContent = current.name;
+  $('#vdl').href = '/files/' + current.file;
+  $('#vdl').setAttribute('download', current.name);
+  $('#viewer').classList.add('on');
+}
+function closeViewer() { $('#viewer').classList.remove('on'); $('#vbody').innerHTML = ''; }
+$('#vclose').onclick = closeViewer;
+$('#vdel').onclick = async () => {
+  if (!current || !confirm('この写真を削除しますか？（Googleフォト側は消えません）')) return;
+  await api('/api/photos/' + current.id, { method: 'DELETE' });
+  closeViewer();
+  loadPhotos();
+};
+document.addEventListener('keydown', (e) => e.key === 'Escape' && closeViewer());
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+init();
+</script>
+</body>
+</html>
